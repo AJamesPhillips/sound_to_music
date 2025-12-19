@@ -1,6 +1,8 @@
 
 # Sound analyser
 
+Video showing successful sound analysis followed by failed replay as musical notes: https://www.youtube.com/watch?v=7He0m7nJiXs
+
 Mostly from an LLM.
 
     pnpm install
