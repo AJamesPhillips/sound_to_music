@@ -1,3 +1,5 @@
+// Mostly from an LLM
+
 import { useEffect, useRef, useState } from "preact/hooks";
 import * as THREE from "three";
 
@@ -11,6 +13,7 @@ const MIN_NOTE_DURATION = 50; // ms
 const NOTE_THRESHOLD = 100; // Amplitude threshold (0-255)
 const NOTES_TO_SHOW = 5;
 const MAX_FREQ_SCALE = 0.125; // 0.5 = Half of Nyquist (e.g. 0-11kHz if 44.1kHz)
+const AMPLITUDE_LOG_SCALE = 10.0;
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -110,7 +113,9 @@ export const DemoSim = () => {
         const material = new THREE.ShaderMaterial({
             uniforms: {
                 uTexture: { value: texture },
-                uMaxFreqScale: { value: MAX_FREQ_SCALE }
+                uMaxFreqScale: { value: MAX_FREQ_SCALE },
+                uAmplitudeLogScale: { value: AMPLITUDE_LOG_SCALE },
+                uLogOfAmplitudeLogScale: { value: Math.log(1.0 + AMPLITUDE_LOG_SCALE) },
             },
             vertexShader: `
                 varying vec2 vUv;
@@ -122,6 +127,8 @@ export const DemoSim = () => {
             fragmentShader: `
                 uniform sampler2D uTexture;
                 uniform float uMaxFreqScale;
+                uniform float uAmplitudeLogScale;
+                uniform float uLogOfAmplitudeLogScale;
                 varying vec2 vUv;
                 void main() {
                     // vUv.x (0..1) -> Screen X (Left to Right)
@@ -139,7 +146,8 @@ export const DemoSim = () => {
                     // So Texture X = vUv.y * uMaxFreqScale (to zoom in)
 
                     float amp = texture2D(uTexture, vec2(vUv.y * uMaxFreqScale, vUv.x)).r;
-                    gl_FragColor = vec4(vec3(amp), 1.0);
+                    float scaled_amp = log(1.0 + amp * uAmplitudeLogScale) / uLogOfAmplitudeLogScale;
+                    gl_FragColor = vec4(vec3(scaled_amp), 1.0);
                 }
             `
         });

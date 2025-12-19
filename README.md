@@ -1,12 +1,10 @@
 
-# WikiSim template simulation - typescript, preact & three.js
+# Sound analyser
 
-## Getting Started
+Mostly from an LLM.
 
-    git clone git@github.com:wikisim/template-sim-typescript-preact-three.git your-new-sim-name --recursive
-    cd your-new-sim-name
     pnpm install
-    pnpm run dev
+    pnpm run dev   # then visit http://localhost:5173/
 
 # Licenses
 
