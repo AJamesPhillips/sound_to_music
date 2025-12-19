@@ -9,6 +9,8 @@ const FREQ_BINS = FFT_SIZE / 2;
 const HISTORY_SIZE = 512; // Number of history frames to keep
 const MIN_NOTE_DURATION = 50; // ms
 const NOTE_THRESHOLD = 100; // Amplitude threshold (0-255)
+const NOTES_TO_SHOW = 5;
+const MAX_FREQ_SCALE = 0.125; // 0.5 = Half of Nyquist (e.g. 0-11kHz if 44.1kHz)
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -27,7 +29,8 @@ function getNoteFromFrequency(frequency: number): string {
 export const DemoSim = () => {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvas3DRef = useRef<HTMLCanvasElement>(null);
-    const canvasNotesRef = useRef<HTMLCanvasElement>(null);
+    const notesContainerRef = useRef<HTMLDivElement>(null);
+    const notesScrollRef = useRef<HTMLDivElement>(null);
     const [started, setStarted] = useState(false);
 
     // Audio refs
@@ -41,7 +44,10 @@ export const DemoSim = () => {
 
     // Note detection refs
     const activeNotesRef = useRef<Map<string, number>>(new Map()); // Note -> StartTime (ms)
-    const noteHistoryRef = useRef<string[][]>(new Array(HISTORY_SIZE).fill([]));
+
+    // Lane Logic Refs
+    const lanesRef = useRef<(string | null)[]>(new Array(NOTES_TO_SHOW).fill(null));
+    const scrollPosRef = useRef<number>(0);
 
     const startAudio = async () => {
         try {
@@ -71,10 +77,11 @@ export const DemoSim = () => {
     };
 
     useEffect(() => {
-        if (!started || !canvas3DRef.current || !canvasNotesRef.current) return;
+        if (!started || !canvas3DRef.current || !notesScrollRef.current || !notesContainerRef.current) return;
 
         const canvas = canvas3DRef.current;
-        const notesCanvas = canvasNotesRef.current;
+        const notesScroll = notesScrollRef.current;
+        const notesContainer = notesContainerRef.current;
 
         // Three.js Setup
         const scene = new THREE.Scene();
@@ -102,7 +109,8 @@ export const DemoSim = () => {
         // Shader Material to swap axes
         const material = new THREE.ShaderMaterial({
             uniforms: {
-                uTexture: { value: texture }
+                uTexture: { value: texture },
+                uMaxFreqScale: { value: MAX_FREQ_SCALE }
             },
             vertexShader: `
                 varying vec2 vUv;
@@ -113,6 +121,7 @@ export const DemoSim = () => {
             `,
             fragmentShader: `
                 uniform sampler2D uTexture;
+                uniform float uMaxFreqScale;
                 varying vec2 vUv;
                 void main() {
                     // vUv.x (0..1) -> Screen X (Left to Right)
@@ -127,9 +136,9 @@ export const DemoSim = () => {
 
                     // Texture X=0 is Low Freq, X=1 is High Freq.
                     // We want Low Freq on Bottom (Screen Y=0), High Freq on Top (Screen Y=1).
-                    // So Texture X = vUv.y
+                    // So Texture X = vUv.y * uMaxFreqScale (to zoom in)
 
-                    float amp = texture2D(uTexture, vec2(vUv.y, vUv.x)).r;
+                    float amp = texture2D(uTexture, vec2(vUv.y * uMaxFreqScale, vUv.x)).r;
                     gl_FragColor = vec4(vec3(amp), 1.0);
                 }
             `
@@ -172,9 +181,12 @@ export const DemoSim = () => {
             const now = audioContextRef.current!.currentTime * 1000; // ms
             const sampleRate = audioContextRef.current!.sampleRate;
 
-            // Find top 5 frequencies
+            // Find top NOTES_TO_SHOW frequencies
             const peaks: { freq: number, amp: number }[] = [];
-            for (let i = 0; i < dataArray.length; i++) {
+            // Only scan up to MAX_FREQ_SCALE portion of the array
+            const maxBin = Math.floor(dataArray.length * MAX_FREQ_SCALE);
+
+            for (let i = 0; i < maxBin; i++) {
                 if (dataArray[i] > NOTE_THRESHOLD) {
                     peaks.push({
                         freq: i * sampleRate / FFT_SIZE,
@@ -183,7 +195,7 @@ export const DemoSim = () => {
                 }
             }
             peaks.sort((a, b) => b.amp - a.amp);
-            const topPeaks = peaks.slice(0, 5);
+            const topPeaks = peaks.slice(0, NOTES_TO_SHOW);
 
             const currentNotes = new Set<string>();
             topPeaks.forEach(p => {
@@ -191,15 +203,15 @@ export const DemoSim = () => {
                 if (note) currentNotes.add(note);
             });
 
-            // Update active notes
-            const confirmedNotes: string[] = [];
+            // Update active notes (Debouncing)
+            const confirmedNotes = new Set<string>();
 
             // Check existing active notes
             for (const [note, startTime] of activeNotesRef.current.entries()) {
                 if (currentNotes.has(note)) {
                     // Still active
                     if (now - startTime > MIN_NOTE_DURATION) {
-                        confirmedNotes.push(note);
+                        confirmedNotes.add(note);
                     }
                 } else {
                     // Note stopped
@@ -214,63 +226,86 @@ export const DemoSim = () => {
                 }
             }
 
-            // Update Note History
-            noteHistoryRef.current.shift();
-            noteHistoryRef.current.push(confirmedNotes);
+            // --- Lane Logic & HTML Rendering ---
 
-            // --- Render Notes ---
-            const ctx = notesCanvas.getContext('2d');
-            if (ctx) {
-                const width = notesCanvas.width;
-                const height = notesCanvas.height;
-                ctx.clearRect(0, 0, width, height);
+            // Calculate scroll step
+            const containerWidth = notesContainer.clientWidth;
+            const stepPixels = containerWidth / HISTORY_SIZE;
 
-                ctx.fillStyle = 'white';
-                ctx.font = '10px monospace';
-                ctx.textAlign = 'center';
+            // Update scroll position
+            scrollPosRef.current += stepPixels;
+            notesScroll.style.transform = `translateX(-${scrollPosRef.current}px)`;
 
-                // Draw history
-                // Index 0 is oldest (Left), Index N is newest (Right)
-                const colWidth = width / HISTORY_SIZE;
-
-                // Optimization: Don't draw every single column if they are too dense
-                // But we need to draw them to show the "bar".
-                // We can skip if empty.
-
-                for (let i = 0; i < HISTORY_SIZE; i++) {
-                    const notes = noteHistoryRef.current[i];
-                    if (notes && notes.length > 0) {
-                        const x = i * colWidth + colWidth / 2;
-
-                        // Draw notes vertically
-                        notes.forEach((note, idx) => {
-                            // Stagger or stack?
-                            // "Column of text"
-                            const y = 15 + idx * 12;
-                            if (y < height) {
-                                ctx.fillText(note, x, y);
-                            }
-                        });
+            // Clean up old nodes (simple optimization)
+            // In a real app, we might use a virtual list or more aggressive culling
+            if (notesScroll.childElementCount > 200) {
+                // Remove first child if it's very old
+                const firstChild = notesScroll.firstElementChild as HTMLElement;
+                if (firstChild) {
+                    const left = parseFloat(firstChild.style.left || "0");
+                    if (left < scrollPosRef.current - 100) { // 100px buffer
+                        notesScroll.removeChild(firstChild);
                     }
                 }
             }
+
+            const lanes = lanesRef.current;
+            const nextLanes = [...lanes];
+            const matchedNotes = new Set<string>();
+
+            // 1. Keep existing notes in their lanes
+            for (let i = 0; i < NOTES_TO_SHOW; i++) {
+                const laneNote = lanes[i];
+                if (laneNote && confirmedNotes.has(laneNote)) {
+                    matchedNotes.add(laneNote);
+                    // Note continues in this lane
+                } else {
+                    // Note stopped in this lane
+                    nextLanes[i] = null;
+                }
+            }
+
+            // 2. Assign new notes to empty lanes
+            for (const note of confirmedNotes) {
+                if (!matchedNotes.has(note)) {
+                    // Find empty lane
+                    const emptyIndex = nextLanes.indexOf(null);
+                    if (emptyIndex !== -1) {
+                        nextLanes[emptyIndex] = note;
+
+                        // Create HTML Element
+                        const el = document.createElement('div');
+                        el.textContent = note;
+                        el.className = 'note-label';
+                        el.style.position = 'absolute';
+                        el.style.left = `${scrollPosRef.current + containerWidth}px`;
+                        el.style.top = `${emptyIndex * 25}px`; // 25px per lane
+                        el.style.color = 'white';
+                        el.style.fontFamily = 'monospace';
+                        el.style.fontSize = '12px';
+                        el.style.fontWeight = 'bold';
+                        el.style.whiteSpace = 'nowrap';
+
+                        notesScroll.appendChild(el);
+                    }
+                    // If no empty lane, note is dropped (priority to existing notes)
+                }
+            }
+
+            lanesRef.current = nextLanes;
         };
 
         animate();
 
         // Handle resize
         const handleResize = () => {
-            if (containerRef.current && canvas3DRef.current && canvasNotesRef.current) {
+            if (containerRef.current && canvas3DRef.current && notesContainerRef.current) {
                 const width = containerRef.current.clientWidth;
 
                 // Update 3D Canvas
                 canvas3DRef.current.width = width;
                 canvas3DRef.current.height = 400;
                 renderer.setSize(width, 400);
-
-                // Update Notes Canvas
-                canvasNotesRef.current.width = width;
-                canvasNotesRef.current.height = 150;
             }
         };
 
@@ -284,6 +319,8 @@ export const DemoSim = () => {
             texture.dispose();
             material.dispose();
             plane.geometry.dispose();
+            // Clear notes
+            if (notesScrollRef.current) notesScrollRef.current.innerHTML = '';
         };
     }, [started]);
 
@@ -318,8 +355,23 @@ export const DemoSim = () => {
                 </div>
             </div>
 
-            <div className="notes-container" style={{ background: '#222', width: '100%', overflow: 'hidden' }}>
-                <canvas ref={canvasNotesRef} style={{ display: 'block', width: '100%', height: '150px' }} />
+            <div className="notes-container" ref={notesContainerRef} style={{
+                background: '#222',
+                width: '100%',
+                height: '150px',
+                overflow: 'hidden',
+                position: 'relative'
+            }}>
+                <div ref={notesScrollRef} style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    height: '100%',
+                    width: '100%', // Will expand as we add items, but we translate it
+                    willChange: 'transform'
+                }}>
+
+                </div>
             </div>
         </div>
     );
