@@ -1,6 +1,7 @@
-import { RecordedNote } from "./Recorder";
+// Mostly from an LLM
 
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+import { NOTE_NAMES } from "./Constants";
+import { RecordedNote } from "./Recorder";
 
 function getFrequencyFromNote(note: string): number {
     const match = note.match(/^([A-G]#?)(-?\d+)$/);
